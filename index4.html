@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Notenverteilung im Zeitverlauf (2021-2025)</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    :root{ --bg:#fafafa; --card:#fff; --border:#e6e6e6; --text:#111827; --muted:#6b7280; }
+    body{ margin:18px; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; background:var(--bg); color:var(--text); }
+    h1{ font-size:18px; margin:0 0 6px 0; }
+    .sub{ font-size:12px; color:var(--muted); margin:0 0 12px 0; line-height:1.35; }
+    .bar{ display:flex; flex-wrap:wrap; gap:10px; align-items:flex-start; margin: 10px 0 14px 0; }
+    .group{ background:var(--card); border:1px solid var(--border); border-radius:12px; padding:10px; }
+    .gtitle{ font-size:11px; color:var(--muted); margin-bottom:6px; }
+    .btnrow{ display:flex; gap:6px; flex-wrap:wrap; }
+    button{
+      border:1px solid var(--border); background:#fff; color:#111827;
+      padding:6px 10px; border-radius:10px; font-size:12px; cursor:pointer;
+    }
+    button.active{ background:#111827; color:#fff; border-color:#111827; }
+    .card{ background:var(--card); border:1px solid var(--border); border-radius:12px; padding:10px; }
+    svg{ width:100%; height:auto; display:block; }
+    .axis path,.axis line{ stroke:#ccc; }
+    .axis text{ fill:#444; font-size:10px; }
+    .legend text{ font-size:11px; fill:#111827; }
+
+    .tooltip{
+      position:fixed; pointer-events:none; opacity:0;
+      background:#111827; color:white; font-size:12px;
+      padding:7px 9px; border-radius:10px; max-width:320px;
+      box-shadow:0 8px 24px rgba(0,0,0,0.18);
+    }
+    code{ background:#f3f4f6; padding:1px 4px; border-radius:6px; }
+  </style>
+</head>
+<body>
+
+
+  <div class="bar" id="controls"></div>
+
+  <div class="card">
+    <svg id="viz" viewBox="0 0 980 520" role="img" aria-label="Liniendiagramm Notengruppen über Zeit"></svg>
+  </div>
+
+  <div class="tooltip" id="tt"></div>
+
+<script>
+(async function(){
+  const data = await fetch("Designuebung_Daten.json").then(r => r.json());
+
+  data.forEach(d => {
+    d.Year = +d.Year;
+    d.Grade = +d.Grade;
+    d.Attemptnumber = +d.Attemptnumber;
+  });
+
+  const YEARS = [2021, 2022, 2023, 2024, 2025];
+
+  // --- grade grouping (5 lines max)
+  const GROUPS = [
+    { id:"g13",  label:"1.0–1.3", color:"#16a34a", test: g => g <= 1.3 },
+    { id:"g23",  label:"1.7–2.3", color:"#2563eb", test: g => g > 1.3 && g <= 2.3 },
+    { id:"g33",  label:"2.7–3.3", color:"#f59e0b", test: g => g > 2.3 && g <= 3.3 },
+    { id:"g40",  label:"3.7–4.0", color:"#db2777", test: g => g > 3.3 && g <= 4.0 },
+    { id:"g50",  label:"5.0",     color:"#dc2626", test: g => g >= 4.7 } // catches 5.0 safely
+  ];
+
+  function groupOfGrade(grade){
+    for(const grp of GROUPS) if(grp.test(grade)) return grp.id;
+    // fallback: put everything else in nearest bucket (shouldn't happen in your dataset)
+    if(grade < 1.7) return "g13";
+    if(grade < 2.7) return "g23";
+    if(grade < 3.7) return "g33";
+    if(grade < 5.0) return "g40";
+    return "g50";
+  }
+
+  const state = {
+    metric: "share",      // "share" | "count"
+    course: "Vis",        // "Vis" | "VA" | "All"
+    nach: "All",          // "Yes" | "No" | "All"
+    level: "All",         // "Bachelor" | "Master" | "All"
+    visibleGroups: new Set(GROUPS.map(g=>g.id)) // which lines shown
+  };
+
+  const controls = d3.select("#controls");
+
+  function makeGroup(title){
+    const g = controls.append("div").attr("class","group");
+    g.append("div").attr("class","gtitle").text(title);
+    return g;
+  }
+
+  function makeButtons(g, key, items){
+    const row = g.append("div").attr("class","btnrow");
+    items.forEach(it=>{
+      row.append("button")
+        .attr("data-key", key)
+        .attr("data-value", it.value)
+        .text(it.label)
+        .on("click", ()=>{
+          state[key] = it.value;
+          updateButtons();
+          render();
+        });
+    });
+  }
+
+  function updateButtons(){
+    d3.selectAll("button").classed("active", function(){
+      const key = this.getAttribute("data-key");
+      const value = this.getAttribute("data-value");
+      return key && state[key] === value;
+    });
+  }
+
+  // Controls
+  const gMetric = makeGroup("Anzeige");
+  makeButtons(gMetric, "metric", [
+    {value:"share", label:"Anteil"},
+    {value:"count", label:"Counts"}
+  ]);
+
+  const gCourse = makeGroup("Course");
+  makeButtons(gCourse, "course", [
+    {value:"Vis", label:"Vis"},
+    {value:"VA",  label:"VA"},
+    {value:"All", label:"All"}
+  ]);
+
+  const gNach = makeGroup("Nachklausur");
+  makeButtons(gNach, "nach", [
+    {value:"Yes", label:"Yes"},
+    {value:"No",  label:"No"},
+    {value:"All", label:"All"}
+  ]);
+
+  const gLevel = makeGroup("Bachelor/Master");
+  makeButtons(gLevel, "level", [
+    {value:"Bachelor", label:"Bachelor"},
+    {value:"Master",   label:"Master"},
+    {value:"All",      label:"All"}
+  ]);
+
+  // Group visibility presets (reduces cognitive load)
+  const gPreset = makeGroup("Notengruppen (sichtbar)");
+  const rowP = gPreset.append("div").attr("class","btnrow");
+
+  function setVisible(ids){
+    state.visibleGroups = new Set(ids);
+    render();
+  }
+
+  rowP.append("button").text("Alle").on("click", ()=> setVisible(GROUPS.map(g=>g.id)));
+  rowP.append("button").text("Nur gute (≤2.3)").on("click", ()=> setVisible(["g13","g23"]));
+  rowP.append("button").text("Mitte (2.7–4.0)").on("click", ()=> setVisible(["g33","g40"]));
+  rowP.append("button").text("Nur 5.0").on("click", ()=> setVisible(["g50"]));
+
+  updateButtons();
+
+  const svg = d3.select("#viz");
+  const tt = d3.select("#tt");
+
+  function filtered(){
+    return data.filter(d=>{
+      if(state.course !== "All" && d.Course !== state.course) return false;
+      if(state.nach !== "All" && d.Nachklausur !== state.nach) return false;
+      if(state.level !== "All" && d["Bachelor/Master"] !== state.level) return false;
+      return true;
+    });
+  }
+
+  function computeSeries(df){
+    // totals per year
+    const totals = d3.rollup(df, v=>v.length, d=>d.Year);
+
+    // counts per year per group
+    const counts = d3.rollup(
+      df,
+      v => d3.rollup(v, vv=>vv.length, d=>groupOfGrade(d.Grade)),
+      d=>d.Year
+    );
+
+    const series = GROUPS
+      .filter(grp => state.visibleGroups.has(grp.id))
+      .map(grp=>{
+        const values = YEARS.map(y=>{
+          const total = totals.get(y) || 0;
+          const m = counts.get(y);
+          const c = (m && m.get(grp.id)) ? m.get(grp.id) : 0;
+          const share = total ? c/total : 0;
+          return {year:y, group:grp.id, label:grp.label, color:grp.color, count:c, share, total};
+        });
+        return {id:grp.id, label:grp.label, color:grp.color, values};
+      });
+
+    return series;
+  }
+
+  function render(){
+    const df = filtered();
+    svg.selectAll("*").remove();
+
+    const W = 980, H = 520;
+    const margin = {t:54, r:200, b:64, l:72};
+    const width = W - margin.l - margin.r;
+    const height = H - margin.t - margin.b;
+
+    const g = svg.append("g").attr("transform", `translate(${margin.l},${margin.t})`);
+
+    const title =
+      `Linien (${state.metric === "share" ? "Anteil" : "Counts"}) – ` +
+      `Course=${state.course}, Nachklausur=${state.nach}, Level=${state.level}`;
+    svg.append("text")
+      .attr("x", margin.l).attr("y", 26)
+      .attr("font-size", 14).attr("fill", "#111827")
+      .text(title);
+
+    const series = computeSeries(df);
+    const metricKey = state.metric;
+
+    const ymax = d3.max(series, s => d3.max(s.values, v => v[metricKey])) || 1;
+
+    const x = d3.scaleLinear()
+      .domain(d3.extent(YEARS))
+      .range([0, width]);
+
+    const y = d3.scaleLinear()
+      .domain([0, ymax]).nice()
+      .range([height, 0]);
+
+    g.append("g")
+      .attr("class","axis")
+      .attr("transform", `translate(0,${height})`)
+      .call(d3.axisBottom(x).tickFormat(d3.format("d")).ticks(YEARS.length));
+
+    const yAxis = (state.metric === "share")
+      ? d3.axisLeft(y).ticks(6).tickFormat(d => (d*100).toFixed(0) + "%")
+      : d3.axisLeft(y).ticks(6);
+
+    g.append("g").attr("class","axis").call(yAxis);
+
+    // grid
+    g.append("g")
+      .attr("opacity", 0.35)
+      .call(d3.axisLeft(y).ticks(6).tickSize(-width).tickFormat(""))
+      .selectAll("line").attr("stroke", "#cfd3da");
+
+    const line = d3.line()
+      .x(d => x(d.year))
+      .y(d => y(d[metricKey]));
+
+    let hovered = null;
+    function setHover(id){
+      hovered = id;
+      g.selectAll(".series").attr("opacity", s => hovered === null ? 1 : (s.id === hovered ? 1 : 0.12));
+      g.selectAll(".pt").attr("opacity", d => hovered === null ? 1 : (d.group === hovered ? 1 : 0.12));
+    }
+
+    // series
+    const sG = g.append("g").selectAll("g.series")
+      .data(series, d=>d.id)
+      .enter().append("g")
+      .attr("class","series");
+
+    sG.append("path")
+      .attr("fill","none")
+      .attr("stroke", d => d.color)
+      .attr("stroke-width", 2.6)
+      .attr("d", d => line(d.values))
+      .on("mouseenter", (_, d)=> setHover(d.id))
+      .on("mouseleave", ()=> setHover(null));
+
+    // points
+    g.append("g")
+      .selectAll("circle.pt")
+      .data(series.flatMap(s => s.values), d => `${d.group}-${d.year}`)
+      .enter().append("circle")
+      .attr("class","pt")
+      .attr("cx", d => x(d.year))
+      .attr("cy", d => y(d[metricKey]))
+      .attr("r", 3.8)
+      .attr("fill", d => d.color)
+      .attr("stroke", "#ffffff")
+      .attr("stroke-width", 1.4)
+      .on("mouseenter", (event, d)=>{
+        setHover(d.group);
+        const main = (state.metric === "share")
+          ? `<div><b>Anteil:</b> ${(d.share*100).toFixed(1)}%</div>`
+          : `<div><b>Counts:</b> ${d.count}</div>`;
+        tt.style("opacity", 1)
+          .style("left", (event.clientX + 12) + "px")
+          .style("top", (event.clientY + 12) + "px")
+          .html(
+            `<div><b>Gruppe:</b> ${d.label}</div>` +
+            `<div><b>Jahr:</b> ${d.year}</div>` +
+            main +
+            `<div><b>n (Jahr):</b> ${d.total}</div>`
+          );
+      })
+      .on("mousemove", (event)=>{
+        tt.style("left", (event.clientX + 12) + "px")
+          .style("top", (event.clientY + 12) + "px");
+      })
+      .on("mouseleave", ()=>{
+        tt.style("opacity", 0);
+        setHover(null);
+      });
+
+    // legend right
+    const legend = svg.append("g")
+      .attr("class","legend")
+      .attr("transform", `translate(${margin.l + width + 18}, ${margin.t})`);
+
+    legend.append("text")
+      .attr("x", 0).attr("y", -10)
+      .attr("font-size", 12)
+      .text("Notengruppen");
+
+    const items = legend.selectAll("g.item")
+      .data(series, d=>d.id)
+      .enter().append("g")
+      .attr("class","item")
+      .attr("transform", (d,i)=> `translate(0, ${i*20})`)
+      .style("cursor","pointer")
+      .on("mouseenter", (_, d)=> setHover(d.id))
+      .on("mouseleave", ()=> setHover(null));
+
+    items.append("rect")
+      .attr("x", 0).attr("y", 4)
+      .attr("width", 12).attr("height", 12)
+      .attr("rx", 3)
+      .attr("fill", d => d.color);
+
+    items.append("text")
+      .attr("x", 18).attr("y", 14)
+      .text(d => d.label);
+
+    if(df.length === 0){
+      g.append("text")
+        .attr("x", 0).attr("y", 16)
+        .attr("fill", "#b91c1c").attr("font-size", 12)
+        .text("Keine Daten nach Filter — bitte Buttons ändern.");
+    }
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
+
